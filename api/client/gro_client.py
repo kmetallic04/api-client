@@ -238,29 +238,22 @@ class GroClient(Client):
             new unit_id. Other properties are unchanged.
 
         """
-        if point.get('unit_id') is None or point.get('unit_id') == target_unit_id:
+        from_unit_id = point.get('unit_id')
+        if from_unit_id is None or target_unit_id is None or from_unit_id == target_unit_id:
             return point
-        from_convert_factor = self.lookup(
-            'units', point['unit_id']
-        ).get('baseConvFactor')
+        from_convert_factor = self.lookup('units', from_unit_id).get('baseConvFactor')
         if not from_convert_factor.get('factor'):
-            raise Exception(
-                'unit_id {} is not convertible'.format(point['unit_id'])
-            )
-        to_convert_factor = self.lookup(
-            'units', target_unit_id
-        ).get('baseConvFactor')
+            raise Exception('unit_id {} is not convertible'.format(from_unit_id))
+        to_convert_factor = self.lookup('units', target_unit_id).get('baseConvFactor')
         if not to_convert_factor.get('factor'):
-            raise Exception(
-                'unit_id {} is not convertible'.format(target_unit_id)
-            )
+            raise Exception('unit_id {} is not convertible'.format(target_unit_id))
         if point.get('value') is not None:
-            value_in_base_unit = (
-                point['value'] * from_convert_factor.get('factor')
-            ) + from_convert_factor.get('offset', 0)
-            point['value'] = float(
-                value_in_base_unit - to_convert_factor.get('offset', 0)
-            ) / to_convert_factor.get('factor')
+            value = float(point['value'])
+            from_factor = from_convert_factor.get('factor', 1)
+            from_offset = from_convert_factor.get('offset', 0)
+            to_factor = to_convert_factor.get('factor', 1)
+            to_offset = to_convert_factor.get('offset', 0)
+            point['value'] = ((value * from_factor) + from_offset - to_offset) / to_factor
         point['unit_id'] = target_unit_id
         return point
 
