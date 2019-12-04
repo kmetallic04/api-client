@@ -12,6 +12,7 @@ import json
 import logging
 import requests
 import time
+from datetime import datetime
 try:
     # functools are native in Python 3.2.3+
     from functools import lru_cache as memoize
@@ -30,15 +31,123 @@ REGION_LEVELS = {
     'coordinate': 9
 }
 
-GRAPH_TYPES_SINGULAR = ['metric', 'item', 'region']
-EXPANDABLE_TYPES_SINGULAR = GRAPH_TYPES_SINGULAR + ['partner_region']
-SERIES_TYPES_SINGULAR = EXPANDABLE_TYPES_SINGULAR + ['frequency', 'source']
-LOOKUP_TYPES_SINGULAR = SERIES_TYPES_SINGULAR + ['unit']
-SERIES_TYPES_ID_SINGULAR = [type_singular+'_id' for type_singular in SERIES_TYPES_SINGULAR]
-LOOKUP_TYPES_PLURAL = [
-    'frequencies' if type_singular == 'frequency' else type_singular+'s'
-    for type_singular in LOOKUP_TYPES_SINGULAR
-]
+GRAPH_TYPES = ['metric', 'item', 'region']
+EXPANDABLE_TYPES = GRAPH_TYPES + ['partner_region']
+SERIES_TYPES = EXPANDABLE_TYPES + ['frequency', 'source']
+LOOKUP_TYPES = SERIES_TYPES + ['unit']
+
+
+"""
+------------------------
+| Parameter formatters |
+------------------------
+"""
+
+
+def as_singular_id(types_singular_list):
+    """Convert a list of type_singular format types into type_singular_id format.
+
+    Parameters
+    ----------
+    types_singular_list : list of strings
+        GRAPH_TYPES, EXPANDABLE_TYPES, SERIES_TYPES, or LOOKUP_TYPES
+
+    >>> as_singular_id(['metric', 'frequency', 'source', 'partner_region'])
+    ['metric_id', 'frequency_id', 'source_id', 'partner_region_id']
+
+    """
+    return [type_singular+'_id' for type_singular in types_singular_list]
+
+
+def as_type_plural(types_singular_list):
+    """Convert a list of type_singular format types into type_singular_id format.
+
+    Parameters
+    ----------
+    types_singular_list : list of strings
+        GRAPH_TYPES, EXPANDABLE_TYPES, SERIES_TYPES, or LOOKUP_TYPES
+
+    >>> as_type_plural(['metric', 'frequency', 'source', 'partner_region'])
+    ['metrics', 'frequencies', 'sources', 'partner_regions']
+
+    """
+    return [type_singular[:-1] + 'ies' if type_singular[-1] == 'y' else type_singular+'s'
+            for type_singular in types_singular_list]
+
+
+@memoize(maxsize=None)
+def snake_to_camel(term):
+    """Convert a string from snake_case to camelCase.
+
+    >>> snake_to_camel('hello_world')
+    'helloWorld'
+
+    Parameters
+    ----------
+    term : string
+
+    Returns
+    -------
+    string
+
+    """
+    camel = term.split('_')
+    return ''.join(camel[:1] + list([x[0].upper()+x[1:] for x in camel[1:]]))
+
+
+def get_params(allowed_inputs, selection):
+    """Construct http request params from dict of entity selections.
+
+    For use with get_data_points().
+
+    >>> get_data_call_params(['metric_id', 'item_id', 'start_date'],
+    ...                      { 'metric_id': 123, 'start_date': '2012-01-01', 'unit_id': 14 }) == {
+    ...     'metricId': 123, 'startDate': '2012-01-01' }
+    True
+
+    Returns
+    -------
+    dict
+        selections with valid keys converted to camelcase and invalid ones filtered out
+
+    """
+    params = {}
+    for key, value in selection.items():
+        if key in allowed_inputs:
+            params[snake_to_camel(key)] = value
+    return params
+
+
+def assert_types(key, value):
+    """Raise an AssertionError if key is not the right type.
+
+    Parameters
+    ----------
+    key : string
+    value : any
+
+    Raises
+    ------
+    AssertionError
+
+    """
+    if key == 'type_singular':
+        assert value in LOOKUP_TYPES
+    elif key == 'type_plural':
+        assert value in as_type_plural(LOOKUP_TYPES)
+    elif key in LOOKUP_TYPES or key in as_singular_id(LOOKUP_TYPES):
+        assert isinstance(value, int), "{} must be an integer".format(key)
+    elif key in as_type_plural(LOOKUP_TYPES):
+        assert isinstance(value, list) and len(value) > 0 and isinstance(value[0], int),\
+            "{} must be a list of integers".format(key)
+    elif key in ['start_date', 'end_date', 'at_time']:
+        assert (isinstance(value, str) and
+                value == datetime.strptime(value, "%Y-%m-%d").strftime('%Y-%m-%d')),\
+               "{} must be a YYYY-MM-DD formatted date string".format(key)
+    elif key in ['insert_null']:
+        assert isinstance(value, bool), "{} must be a boolean".format(key)
+    else:
+        raise AssertionError('Unknown query parameter')
 
 
 def get_default_logger():
@@ -188,6 +297,7 @@ def get_data(url, headers, params=None, logger=None):
 
 @memoize(maxsize=None)
 def get_available(access_token, api_host, entity_type):
+    assert_types('type_plural', entity_type)
     url = '/'.join(['https:', '', api_host, 'v2', entity_type])
     headers = {'authorization': 'Bearer ' + access_token}
     resp = get_data(url, headers)
@@ -195,10 +305,9 @@ def get_available(access_token, api_host, entity_type):
 
 
 def list_available(access_token, api_host, selected_entities):
+    params = get_params(SERIES_TYPES, selected_entities)
     url = '/'.join(['https:', '', api_host, 'v2/entities/list'])
     headers = {'authorization': 'Bearer ' + access_token}
-    params = dict([(snake_to_camel(key), value)
-                   for (key, value) in list(selected_entities.items())])
     resp = get_data(url, headers, params)
     try:
         return resp.json()['data']
@@ -208,6 +317,8 @@ def list_available(access_token, api_host, selected_entities):
 
 @memoize(maxsize=None)
 def lookup(access_token, api_host, entity_type, entity_id):
+    assert_types('type_singular', entity_type)
+    assert_types('id', entity_id)
     url = '/'.join(['https:', '', api_host, 'v2', entity_type, str(entity_id)])
     headers = {'authorization': 'Bearer ' + access_token}
     resp = get_data(url, headers)
@@ -217,104 +328,11 @@ def lookup(access_token, api_host, entity_type, entity_id):
         raise Exception(resp.text)
 
 
-@memoize(maxsize=None)
-def snake_to_camel(term):
-    """Convert a string from snake_case to camelCase.
-
-    >>> snake_to_camel('hello_world')
-    'helloWorld'
-
-    Parameters
-    ----------
-    term : string
-
-    Returns
-    -------
-    string
-
-    """
-    camel = term.split('_')
-    return ''.join(camel[:1] + list([x[0].upper()+x[1:] for x in camel[1:]]))
-
-
-def get_params_from_selection(**selection):
-    """Construct http request params from dict of entity selections.
-
-    For use with get_data_series() and rank_series_by_source().
-
-    >>> get_params_from_selection(
-    ...     metric_id=123, item_id=456, unit_id=14
-    ... ) == { 'itemId': 456, 'metricId': 123 }
-    True
-
-    Parameters
-    ----------
-    metric_id : integer, optional
-    item_id : integer, optional
-    region_id : integer, optional
-    partner_region_id : integer, optional
-    source_id : integer, optional
-    frequency_id : integer, optional
-    start_date: string, optional
-    end_date: string, optional
-
-    Returns
-    -------
-    dict
-        selections with valid keys converted to camelcase and invalid ones filtered out
-
-    """
-    params = {}
-    for key, value in list(selection.items()):
-        if key in SERIES_TYPES_ID_SINGULAR+['start_date', 'end_date']:
-            params[snake_to_camel(key)] = value
-    return params
-
-
-def get_data_call_params(**selection):
-    """Construct http request params from dict of entity selections.
-
-    For use with get_data_points().
-
-    >>> get_data_call_params(metric_id=123, start_date='2012-01-01', unit_id=14) == {
-    ...     'metricId': 123, 'startDate': '2012-01-01', 'responseType': 'list_of_series'
-    ... }
-    True
-
-    Parameters
-    ----------
-    metric_id : integer
-    item_id : integer
-    region_id : integer
-    partner_region_id : integer
-    source_id : integer
-    frequency_id : integer
-    start_date : string, optional
-    end_date : string, optional
-    show_revisions : boolean, optional
-    insert_null : boolean, optional
-    at_time : string, optional
-
-    Returns
-    -------
-    dict
-        selections with valid keys converted to camelcase and invalid ones filtered out
-
-    """
-
-    params = get_params_from_selection(**selection)
-    for key, value in list(selection.items()):
-        if key in ('start_date', 'end_date', 'show_revisions', 'insert_null', 'at_time'):
-            params[snake_to_camel(key)] = value
-    params['responseType'] = 'list_of_series'
-    return params
-
-
 def get_data_series(access_token, api_host, **selection):
     logger = get_default_logger()
     url = '/'.join(['https:', '', api_host, 'v2/data_series/list'])
     headers = {'authorization': 'Bearer ' + access_token}
-    params = get_params_from_selection(**selection)
+    params = get_params(SERIES_TYPES)
     resp = get_data(url, headers, params)
     try:
         response = resp.json()['data']
@@ -331,17 +349,20 @@ def get_data_series(access_token, api_host, **selection):
 def get_source_ranking(access_token, api_host, series):
     """Given a series, return a list of ranked sources.
 
-    :param access_token: API access token.
-    :param api_host: API host.
-    :param series: Series to calculate source raking for.
-    :return: List of sources that match the series parameters, sorted by rank.
+    Parameters
+    ----------
+    access_token : string
+    api_host : string
+    series: dict
+        Series to calculate source raking for.
+
+    Returns
+    -------
+    list of integers
+        Source ids that match the series parameters, sorted by rank
+
     """
-    def make_key(key):
-        if key not in ('startDate', 'endDate'):
-            return key + 's'
-        return key
-    params = dict((make_key(k), v) for k, v in iter(list(
-        get_params_from_selection(**series).items())))
+    valid_inputs = as_type_plural(SERIES_TYPES)+['start_date', 'end_date']
     url = '/'.join(['https:', '', api_host, 'v2/available/sources'])
     headers = {'authorization': 'Bearer ' + access_token}
     return get_data(url, headers, params).json()
@@ -369,7 +390,21 @@ def rank_series_by_source(access_token, api_host, series_list):
 
 
 def format_list_of_series(series_list):
-    """Convert list_of_series format from API back into the familiar single_series output format
+    """Convert list_of_series format from API back into the familiar single_series output format.
+
+    Parameters
+    ----------
+    series_list : list of dicts
+        "list_of_series" format. Each dict has "series" and "data" attributes. "series" is a dict,
+        and "data" is a list of 3-5 element lists in the order
+        [start_date, end_date, value, reporting_date, metadata]. Reporting_date or metadata may be
+        excluded or None if there is none available.
+
+    Returns
+    -------
+    list of dicts
+        "single_series" format. Each dict is a different time series point, and every one of them
+        has the attributes of the series the data point belongs to.
 
     >>> format_list_of_series([{ 'series': {}, 'data': [['2001-01-01', '2001-12-31', 123]] }]) == [
     ...   { 'start_date': '2001-01-01', 'end_date': '2001-12-31', 'value': 123,
@@ -407,7 +442,8 @@ def format_list_of_series(series_list):
 def get_data_points(access_token, api_host, **selection):
     headers = {'authorization': 'Bearer ' + access_token}
     url = '/'.join(['https:', '', api_host, 'v2/data'])
-    params = get_data_call_params(**selection)
+    valid_inputs = SERIES_TYPES + ['start_date', 'end_date', 'at_time', 'insert_null']
+    params = get_params(valid_inputs, selection)
     resp = get_data(url, headers, params)
     return format_list_of_series(resp.json())
 
@@ -440,6 +476,7 @@ def universal_search(access_token, api_host, search_terms):
 
 @memoize(maxsize=None)
 def search(access_token, api_host, entity_type, search_terms):
+    assert_types('type_plural', entity_type)
     url = '/'.join(['https:', '', api_host, 'v2/search', entity_type])
     headers = {'authorization': 'Bearer ' + access_token}
     resp = get_data(url, headers, {'q': search_terms})
@@ -447,12 +484,15 @@ def search(access_token, api_host, entity_type, search_terms):
 
 
 def search_and_lookup(access_token, api_host, entity_type, search_terms, num_results=10):
+    assert_types('type_plural', entity_type)
     search_results = search(access_token, api_host, entity_type, search_terms)
     for result in search_results[:num_results]:
         yield lookup(access_token, api_host, entity_type, result['id'])
 
 
 def lookup_belongs(access_token, api_host, entity_type, entity_id):
+    assert_types('type_plural', entity_type)
+    assert_types('id', entity_id)
     url = '/'.join(['https:', '', api_host, 'v2', entity_type, 'belongs-to'])
     params = {'ids': str(entity_id)}
     headers = {'authorization': 'Bearer ' + access_token}
@@ -462,6 +502,7 @@ def lookup_belongs(access_token, api_host, entity_type, entity_id):
 
 
 def get_geo_centre(access_token, api_host, region_id):
+    assert_types('id', region_id)
     url = '/'.join(['https:', '', api_host, 'v2/geocentres?regionIds=' +
                     str(region_id)])
     headers = {'authorization': 'Bearer ' + access_token}
@@ -471,6 +512,7 @@ def get_geo_centre(access_token, api_host, region_id):
 
 @memoize(maxsize=None)
 def get_geojson(access_token, api_host, region_id):
+    assert_types('id', region_id)
     url = '/'.join(['https:', '', api_host, 'v2/geocentres?includeGeojson=True&regionIds=' +
                     str(region_id)])
     headers = {'authorization': 'Bearer ' + access_token}
@@ -482,6 +524,7 @@ def get_geojson(access_token, api_host, region_id):
 
 def get_descendant_regions(access_token, api_host, region_id,
                            descendant_level=False, include_historical=True):
+    assert_types('id', region_id)
     descendants = []
     region = lookup(access_token, api_host, 'regions', region_id)
     for member_id in region['contains']:
