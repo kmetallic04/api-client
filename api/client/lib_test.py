@@ -240,18 +240,48 @@ def test_rank_series_by_source(mock_requests_get):
     mock_requests_get.return_value.json.return_value = mock_return
     mock_requests_get.return_value.status_code = 200
 
-    a = {'region_id': 13474, 'abc': 123, 'def': 123, 'ghe': 123, 'fij': 123,
-         'item_id': 3457, 'metric_id': 2540047,
-         'source_id': 123, 'source_name': 'dontcare'}
-    a.pop('abc')
-    a.pop('def')
-    a.pop('ghe')
-    a.pop('fij')
+    a = {
+        'metric_id': 2540047,
+        'item_id': 3457, 
+        'region_id': 13474,
+        'frequency_id': 9,
+        'source_id': 123,
+        'source_name': 'dontcare',
+        'start_date': 123,
+        'end_date': 123,
+        'ghe': 123,
+        'fij': 123
+    }
 
-    b = {'item_id': 1457, 'region_id': 13474, 'metric_id': 2540047}
-    c = list(lib.rank_series_by_source(MOCK_TOKEN, MOCK_HOST, [a, b]))
+    b = {
+        'metric_id': 2540047,
+        'item_id': 3457, 
+        'region_id': 13474,
+        'frequency_id': 9,
+        'source_id': 1234, # different source
+        'source_name': 'still dontcare',
+        'start_date': 123,
+        'end_date': 123,
+        'ghe': 123,
+        'fij': 123
+    }
 
-    assert(len(c) == 6)
-    for x in c:
-        assert 'source_name' not in x
-    assert mock_return + mock_return == [x['source_id'] for x in c]
+    c = {
+        'metric_id': 2540047,
+        'item_id': 1457,  # different item
+        'region_id': 13474,
+        'frequency_id': 9,
+        'source_id': 123,
+        'source_name': 'dontcare',
+        'start_date': 123,
+        'end_date': 123,
+        'ghe': 123,
+        'fij': 123
+    }
+
+    ranked_list = list(lib.rank_series_by_source(MOCK_TOKEN, MOCK_HOST, [a, a, b, c]))
+
+    assert(len(ranked_list) == 6)
+    for data_series in ranked_list:
+        assert 'source_name' not in data_series
+    assert mock_return + mock_return == [data_series['source_id'] for data_series in ranked_list]

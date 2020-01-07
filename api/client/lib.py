@@ -379,19 +379,15 @@ def get_source_ranking(access_token, api_host, series):
 
 
 def rank_series_by_source(access_token, api_host, series_list):
-    for series in series_list:
+    for query_series in series_list:
         try:
-            # Remove source if selected, to consider all sources.
-            series.pop('source_name', None)
-            series.pop('source_id', None)
-            source_ids = get_source_ranking(access_token, api_host, series)
+            source_ids_ordered = get_source_ranking(access_token, api_host, query_series)
         except ValueError:
             continue  # empty response
-        for source_id in source_ids:
-            # Make a copy to avoid passing the same reference each time.
-            series_with_source = dict(series)
-            series_with_source['source_id'] = source_id
-            yield series_with_source
+        for source_id in source_ids_ordered:
+            query_series['source_id'] = source_id
+            for data_series in get_data_series(**query_series):
+                yield data_series
 
 
 def list_of_series_to_single_series(series_list, add_belongs_to=False):
