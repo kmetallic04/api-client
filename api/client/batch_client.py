@@ -17,6 +17,7 @@ from tornado.queues import Queue
 from api.client import cfg, lib
 from api.client.gro_client import GroClient
 
+
 class BatchClient(GroClient):
     """API client with support for batch asynchronous queries."""
 
@@ -52,7 +53,12 @@ class BatchClient(GroClient):
                 log_record['retry_count'] = retry_count
                 log_record['status_code'] = data.code
                 self._logger.debug('OK', extra=log_record)
-                raise gen.Return(data.body)
+                if data.code == 200:
+                    self._logger.debug('OK', extra=log_record)
+                    raise gen.Return(data.body)
+                if data.code == 204:
+                    self._logger.warning('No Content', extra=log_record)
+                    raise gen.Return(data.body)
             except HTTPClientError as e:
                 elapsed_time = time.time() - start_time
                 log_record = dict(base_log_record)
@@ -72,11 +78,12 @@ class BatchClient(GroClient):
                             'Redirecting {} to {}'.format(params, new_params),
                             extra=log_record)
                         params = new_params
+                    elif data.status_code in [400, 401, 404, 500]:
+                        break
                 else:
                     self._logger.error(e.response.error, extra=log_record)
                     raise Exception('Giving up on {} after {} tries. \
-                        Error is: {}.'.format(
-                        url, retry_count, e.response.error))
+                        Error is: {}.'.format(url, retry_count, e.response.error))
 
     @gen.coroutine
     def get_data_points(self, **selection):
@@ -100,7 +107,7 @@ class BatchClient(GroClient):
     @gen.coroutine
     def get_data_points_generator(self, **selection):
         headers = {'authorization': 'Bearer ' + self.access_token}
-        url = '/'.join(['https:', '', self.api_host, 'v2/data'])
+        url = '/'.join([lib.get_host(self.api_host), 'v2/data'])
         params = lib.get_data_call_params(**selection)
         resp = yield self.get_data(url, headers, params)
         raise gen.Return(json_decode(resp))
@@ -109,7 +116,8 @@ class BatchClient(GroClient):
                                     map_result=None):
         batch_async_series_list = self.batch_async_queue(
             self.get_data_points_generator, batched_args, output_list, map_result)
-        return [lib.list_of_series_to_single_series(series_list) for series_list in batch_async_series_list]
+        return [lib.list_of_series_to_single_series(series_list)
+                for series_list in batch_async_series_list]
 
     @gen.coroutine
     def async_rank_series_by_source(self, **selection):
@@ -118,7 +126,7 @@ class BatchClient(GroClient):
         raise gen.Return([r for r in response])
 
     def batch_async_rank_series_by_source(self, batched_args,
-                                       output_list=None, map_result=None):
+                                          output_list=None, map_result=None):
         return self.batch_async_queue(self.async_rank_series_by_source, batched_args,
                                       output_list, map_result)
 
@@ -174,7 +182,7 @@ class BatchClient(GroClient):
         @gen.coroutine
         def main():
             # Start consumer without waiting (since it never finishes).
-            for i in range(cfg.MAX_QUERIES_PER_SECOND):
+            for i in range(cfg.MAX_CONCURRENT_REQUESTS):
                 IOLoop.current().spawn_callback(consumer)
             producer()  # Wait for producer to put all tasks.
             yield q.join()  # Wait for consumer to finish all tasks.

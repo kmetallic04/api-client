@@ -103,8 +103,7 @@ class CropModel(GroClient):
             by the crop weight for that region.
 
         """
-        weights = self.compute_weights(weighting_crop_name, weighting_metric_name,
-                                       regions)
+        weights = self.compute_weights(weighting_crop_name, weighting_metric_name, regions)
         entities = {
             'item_id': self.search_for_entity('items', item_name),
             'metric_id': self.search_for_entity('metrics', metric_name)

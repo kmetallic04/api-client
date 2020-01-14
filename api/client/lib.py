@@ -93,6 +93,48 @@ def get_default_logger():
     return logger
 
 
+def get_host(api_host=None):
+    """Make sure the api_host includes protocol. If none provided, use default host.
+
+    Parameters
+    ----------
+    api_host : string, optional
+        Can be an http:// address, an https:// address,
+        a URL without protocol (defaults to https:// in that case),
+        or nothing (defaults to https://api.gro-intelligence.com in that case)
+
+    Returns
+    -------
+    string
+        The input string, reformatted into a valid URL, with protocol.
+
+    Examples
+    --------
+    >>> get_host('api.gro-intelligence.com')
+    'https://api.gro-intelligence.com'
+    >>> get_host('http://api.gro-intelligence.com')
+    'http://api.gro-intelligence.com'
+    >>> get_host('https://api.gro-intelligence.com')
+    'https://api.gro-intelligence.com'
+    >>> get_host()
+    'https://api.gro-intelligence.com'
+
+    """
+    if not api_host:
+        return cfg.HOST
+    if api_host[:4] != 'http':  # if protocol is not provided, default to https
+        return 'https://' + api_host
+    return api_host
+
+
+def get_headers(access_token=None):
+    if not access_token:
+        access_token = get_access_token()
+    return {
+        'Authorization': 'Bearer {}'.format(access_token)
+    }
+
+
 def get_access_token(api_host, user_email, user_password, logger=None):
     """Request an access token.
 
@@ -115,10 +157,18 @@ def get_access_token(api_host, user_email, user_password, logger=None):
 
     """
     retry_count = 0
+    if 'GROAPI_TOKEN' in os.environ:
+        return os.environ['GROAPI_TOKEN']
+    if not api_host:
+        api_host = cfg.HOST
+    if not user_email:
+        user_email = input('Email:')
+    if not user_password:
+        user_password = get_pass()
     if not logger:
         logger = get_default_logger()
     while retry_count < cfg.MAX_RETRIES:
-        get_api_token = requests.post('https://' + api_host + '/api-token',
+        get_api_token = requests.post('{}/api-token'.format(get_host(api_host)),
                                       data={'email': user_email,
                                             'password': user_password})
         if get_api_token.status_code == 200:
@@ -222,18 +272,17 @@ def get_data(url, headers, params=None, logger=None):
 
 @memoize(maxsize=None)
 def get_available(access_token, api_host, entity_type):
-    url = '/'.join(['https:', '', api_host, 'v2', entity_type])
-    headers = {'authorization': 'Bearer ' + access_token}
-    resp = get_data(url, headers)
-    return resp.json()['data']
+    return get_data(
+        '{}/v2/{}'.format(get_host(api_host), entity_type),
+        get_headers(access_token)
+    ).json()['data']
 
 
 def list_available(access_token, api_host, selected_entities):
-    url = '/'.join(['https:', '', api_host, 'v2/entities/list'])
-    headers = {'authorization': 'Bearer ' + access_token}
+    url = '/'.join([get_host(api_host), 'v2/entities/list'])
     params = dict([(snake_to_camel(key), value)
                    for (key, value) in list(selected_entities.items())])
-    resp = get_data(url, headers, params)
+    resp = get_data(url, get_headers(access_token), params)
     try:
         return resp.json()['data']
     except KeyError:
@@ -242,9 +291,10 @@ def list_available(access_token, api_host, selected_entities):
 
 @memoize(maxsize=None)
 def lookup(access_token, api_host, entity_type, entity_id):
-    url = '/'.join(['https:', '', api_host, 'v2', entity_type, str(entity_id)])
-    headers = {'authorization': 'Bearer ' + access_token}
-    resp = get_data(url, headers)
+    resp = get_data(
+        '{}/v2/{}/{}'.format(get_host(api_host), entity_type, str(entity_id)),
+        get_headers(access_token)
+    )
     try:
         return resp.json()['data']
     except KeyError:
@@ -346,10 +396,12 @@ def get_data_call_params(**selection):
 
 def get_data_series(access_token, api_host, **selection):
     logger = get_default_logger()
-    url = '/'.join(['https:', '', api_host, 'v2/data_series/list'])
-    headers = {'authorization': 'Bearer ' + access_token}
-    params = get_params_from_selection(**selection)
-    resp = get_data(url, headers, params)
+    resp = get_data(
+        '{}/v2/data_series/list'.format(get_host(api_host)),
+        get_headers(access_token),
+        get_params_from_selection(**selection),
+        logger
+    )
     try:
         response = resp.json()['data']
         if any((series.get('metadata', {}).get('includes_historical_region', False)) for series in response):
@@ -371,11 +423,13 @@ def get_source_ranking(access_token, api_host, series):
         if key not in ('startDate', 'endDate'):
             return key + 's'
         return key
-    params = dict((make_key(k), v) for k, v in iter(list(
-        get_params_from_selection(**series).items())))
-    url = '/'.join(['https:', '', api_host, 'v2/available/sources'])
-    headers = {'authorization': 'Bearer ' + access_token}
-    return get_data(url, headers, params).json()
+
+    return get_data(
+        '{}/v2/available/sources'.format(get_host(api_host)),
+        get_headers(access_token),
+        dict((make_key(k), v) for k, v in iter(list(get_params_from_selection(**series).items()))),
+        logger
+    ).json()
 
 
 def rank_series_by_source(access_token, api_host, series_list):
@@ -493,11 +547,11 @@ def list_of_series_to_single_series(series_list, add_belongs_to=False):
 
 
 def get_data_points(access_token, api_host, **selection):
-    headers = {'authorization': 'Bearer ' + access_token}
-    url = '/'.join(['https:', '', api_host, 'v2/data'])
-    params = get_data_call_params(**selection)
-    resp = get_data(url, headers, params)
-    return list_of_series_to_single_series(resp.json())
+    return list_of_series_to_single_series(get_data(
+        '{}/v2/data'.format(get_host(api_host)),
+        get_headers(access_token),
+        get_data_call_params(**selection)
+    )).json()
 
 
 @memoize(maxsize=None)
@@ -519,7 +573,7 @@ def universal_search(access_token, api_host, search_terms):
             [[5604, 'item'], [10204, 'item'], [410032, 'metric'], ....]
 
     """
-    url_pieces = ['https:', '', api_host, 'v2/search']
+    url_pieces = [get_host(api_host), 'v2/search']
     url = '/'.join(url_pieces)
     headers = {'authorization': 'Bearer ' + access_token}
     resp = get_data(url, headers, {'q': search_terms})
@@ -528,7 +582,7 @@ def universal_search(access_token, api_host, search_terms):
 
 @memoize(maxsize=None)
 def search(access_token, api_host, entity_type, search_terms):
-    url = '/'.join(['https:', '', api_host, 'v2/search', entity_type])
+    url = '/'.join([get_host(api_host), 'v2/search', entity_type])
     headers = {'authorization': 'Bearer ' + access_token}
     resp = get_data(url, headers, {'q': search_terms})
     return resp.json()
@@ -541,7 +595,7 @@ def search_and_lookup(access_token, api_host, entity_type, search_terms, num_res
 
 
 def lookup_belongs(access_token, api_host, entity_type, entity_id):
-    url = '/'.join(['https:', '', api_host, 'v2', entity_type, 'belongs-to'])
+    url = '/'.join([get_host(api_host), 'v2', entity_type, 'belongs-to'])
     params = {'ids': str(entity_id)}
     headers = {'authorization': 'Bearer ' + access_token}
     parents = get_data(url, headers, params).json().get('data').get(str(entity_id), [])
@@ -550,7 +604,7 @@ def lookup_belongs(access_token, api_host, entity_type, entity_id):
 
 
 def get_geo_centre(access_token, api_host, region_id):
-    url = '/'.join(['https:', '', api_host, 'v2/geocentres?regionIds=' +
+    url = '/'.join([get_host(api_host), 'v2/geocentres?regionIds=' +
                     str(region_id)])
     headers = {'authorization': 'Bearer ' + access_token}
     resp = get_data(url, headers)
@@ -559,7 +613,7 @@ def get_geo_centre(access_token, api_host, region_id):
 
 @memoize(maxsize=None)
 def get_geojson(access_token, api_host, region_id):
-    url = '/'.join(['https:', '', api_host, 'v2/geocentres?includeGeojson=True&regionIds=' +
+    url = '/'.join([get_host(api_host), 'v2/geocentres?includeGeojson=True&regionIds=' +
                     str(region_id)])
     headers = {'authorization': 'Bearer ' + access_token}
     resp = get_data(url, headers)

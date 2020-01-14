@@ -1,5 +1,6 @@
 from builtins import object
 from api.client import lib
+from api.client import cfg
 
 class Client(object):
     """API client with stateful authentication for lib functions."""
