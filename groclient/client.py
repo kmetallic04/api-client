@@ -1,5 +1,6 @@
 from __future__ import print_function
 import functools
+from groclient.cfg import MAX_RESULT_COMBINATION_DEPTH
 import itertools
 import time
 import json
@@ -13,7 +14,7 @@ except ImportError:
     from urllib import urlencode
 
 from groclient import cfg, lib
-from groclient.constants import DATA_SERIES_UNIQUE_TYPES_ID, ENTITY_KEY_TO_TYPE
+from groclient.constants import DATA_SERIES_UNIQUE_TYPES_ID, ENTITY_KEY_TO_TYPE, ENTITY_TYPES_PLURAL
 from groclient.utils import intersect, zip_selections, dict_unnest
 from groclient.lib import APIError
 
@@ -1179,51 +1180,34 @@ class GroClient(object):
         :meth:`~.get_data_series`
 
         """
-        results = []  # [[('item_id',1),('item_id',2),...],[('metric_id" 1),...],...]
-        for kw in kwargs:
-            if kwargs.get(kw) is None:
-                continue
-            id_key = "{}_id".format(kw)
-            if id_key in ENTITY_KEY_TO_TYPE:
-                type_results = []  # [('item_id',1),('item_id',2),...]
-                for search_result in self.search(
-                    ENTITY_KEY_TO_TYPE[id_key], kwargs[kw]
-                )[: cfg.MAX_RESULT_COMBINATION_DEPTH]:
-                    if result_filter is None or result_filter(
-                        {id_key: search_result["id"]}
-                    ):
-                        type_results.append((id_key, search_result["id"]))
-                results.append(type_results)
-        # Rank by frequency and source, while preserving search ranking in
-        # permutations of search results.
-        ranking_groups = set()
-        for comb in itertools.product(*results):
-            for data_series in self.get_data_series(**dict(comb))[
-                : cfg.MAX_SERIES_PER_COMB
-            ]:
-                self._logger.debug("Data series: {}".format(data_series))
-                # remove time and frequency to rank them
-                data_series.pop("start_date", None)
-                data_series.pop("end_date", None)
-                data_series.pop("frequency_id", None)
-                data_series.pop("frequency_name", None)
-                # remove source to rank them
-                data_series.pop("source_id", None)
-                data_series.pop("source_name", None)
-                # metadata is not hashable
-                data_series.pop("metadata", None)
-                series_hash = frozenset(data_series.items())
-                if series_hash not in ranking_groups:
-                    ranking_groups.add(series_hash)
-                    if kwargs.get("start_date"):
-                        data_series["start_date"] = kwargs["start_date"]
-                    if kwargs.get("end_date"):
-                        data_series["end_date"] = kwargs["end_date"]
-                    for tf in self.get_available_timefrequency(**data_series):
-                        ds = dict(data_series)
-                        ds["frequency_id"] = tf["frequency_id"]
-                        for data_series in self.rank_series_by_source([ds]):
-                            yield self.get_data_series(**data_series)[0]
+        possible_selections = {}
+        rankings = {}
+        for type_singular in ['metric', 'item', 'region', 'partner_region']:
+            type_plural = type_singular + 's'
+            search_type = type_plural if type_plural != 'partner_regions' else 'regions'
+            if type_singular in kwargs:
+                possible_selections[type_plural] = self.search(
+                    search_type,
+                    kwargs[type_singular]
+                )[:MAX_RESULT_COMBINATION_DEPTH]
+                rankings[type_plural] = {
+                    entity_id: (idx / len(possible_selections[type_plural]))
+                    for idx, entity_id in enumerate(possible_selections[type_plural])
+                }
+            else:
+                ordered_entities = self.get_available(type_plural)
+                rankings[type_plural] = {
+                    entity_id: (idx / len(ordered_entities))
+                    for idx, entity_id in enumerate(ordered_entities)
+                }
+        plural_to_id = zip(ENTITY_TYPES_PLURAL[:4], DATA_SERIES_UNIQUE_TYPES_ID[:4])
+        selection_type_ids = [plural_to_id[type_plural]
+                              for type_plural in possible_selections.keys()]
+        for selection_ids in product(possible_selections.values()):
+            
+            data_series_list = self.get_data_series(**zip(selection_type_ids, selection_ids))
+
+
 
     def add_data_series(self, **kwargs):
         """Adds the top result of :meth:`~.find_data_series` to the saved data series list.
